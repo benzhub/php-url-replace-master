@@ -321,6 +321,16 @@ final class WpConfigReader
 
             $value = $this->_extractTokenValue( $tokens[ $j ] );
 
+            // 若 token 是 T_STRING 且名稱為 getenv，嘗試解析環境變數
+            if (
+                $value === null
+                && is_array( $tokens[ $j ] )
+                && $tokens[ $j ][0] === T_STRING
+                && strtolower( $tokens[ $j ][1] ) === 'getenv'
+            ) {
+                $value = $this->_extractGetenvValue( $tokens, $j );
+            }
+
             if ( $value !== null ) {
                 $constants[ $const_name ] = $value;
             }
@@ -363,5 +373,57 @@ final class WpConfigReader
             T_LNUMBER, T_DNUMBER      => $token[1],
             default                   => null,
         };
+    }
+
+    /**
+     * 從 token 串流中提取 getenv('ENV_VAR') 呼叫所對應的環境變數值
+     *
+     * 支援 wp-config.php 中常見的容器化模式：
+     *   define('DB_HOST', getenv('WORDPRESS_DB_HOST'));
+     *
+     * 從當前 getenv token 位置向後找到引號括住的變數名稱，
+     * 再呼叫 PHP 原生 getenv() 取得實際環境變數值。
+     *
+     * @param array<int, mixed> $tokens  全部 token 陣列
+     * @param int               $pos     目前 getenv T_STRING token 的位置
+     *
+     * @return string|null 環境變數值，若解析失敗或環境變數不存在則返回 null
+     */
+    private function _extractGetenvValue( array $tokens, int $pos ): ?string
+    {
+        $count = count( $tokens );
+        $j     = $pos + 1;
+
+        while ( $j < $count && is_array( $tokens[ $j ] ) && $tokens[ $j ][0] === T_WHITESPACE ) {
+            $j++;
+        }
+
+        if ( ! isset( $tokens[ $j ] ) || $tokens[ $j ] !== '(' ) {
+            return null;
+        }
+
+        $j++;
+
+        while ( $j < $count && is_array( $tokens[ $j ] ) && $tokens[ $j ][0] === T_WHITESPACE ) {
+            $j++;
+        }
+
+        if (
+            ! isset( $tokens[ $j ] )
+            || ! is_array( $tokens[ $j ] )
+            || $tokens[ $j ][0] !== T_CONSTANT_ENCAPSED_STRING
+        ) {
+            return null;
+        }
+
+        $env_name = trim( $tokens[ $j ][1], '\'"' );
+
+        if ( $env_name === '' ) {
+            return null;
+        }
+
+        $value = getenv( $env_name );
+
+        return $value !== false ? $value : null;
     }
 }
