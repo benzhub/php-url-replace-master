@@ -100,20 +100,6 @@ final class UrlVariantBuilder
         $rawNew = sprintf("'%s','%s'", $newDomain, $this->trailingSlashIt($newPath));
         $this->addRawIfNotExists($rawOld, $rawNew);
 
-        // domain+path 帶引號格式（HTML 屬性值中）
-        $this->addIfNotExists(
-            $this->oldValues,
-            $this->newValues,
-            sprintf("='%s%s", $oldDomain, $this->untrailingSlashIt($oldPath)),
-            sprintf("='%s%s", $newDomain, $this->untrailingSlashIt($newPath))
-        );
-        $this->addIfNotExists(
-            $this->oldValues,
-            $this->newValues,
-            sprintf('="%s%s', $oldDomain, $this->untrailingSlashIt($oldPath)),
-            sprintf('="%s%s', $newDomain, $this->untrailingSlashIt($newPath))
-        );
-
         // 三種 scheme 迴圈
         $oldSchemes = ['http', 'https', ''];
         $newSchemes = [$newScheme, $newScheme, ''];

@@ -202,12 +202,7 @@ final class SerializedReplacer
                     }
                 }
             } elseif (is_string($data)) {
-                // JSON 格式（如 Elementor _elementor_data 的雙層結構：序列化外層解開後得到 JSON 內層）
-                if (self::isJson($data)) {
-                    $data = self::replaceJsonValues($from, $to, $data);
-                } else {
-                    $data = self::replaceValues($from, $to, $data);
-                }
+                $data = self::replaceValues($from, $to, $data);
             }
 
             if ($serialized) {
