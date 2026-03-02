@@ -128,6 +128,11 @@ final class SerializedReplacer
             ) ?? $input;
         }
 
+        // Elementor / Bricks / JSON 格式欄位（直接 JSON，非 PHP 序列化）
+        if (self::isJson($input)) {
+            return self::replaceJsonValues($oldValues, $newValues, $input);
+        }
+
         // 直接對欄位值做序列化安全替換（無需 SQL 引號提取）
         return (string) self::replaceSerializedValues($oldValues, $newValues, $input, false);
     }
@@ -197,7 +202,12 @@ final class SerializedReplacer
                     }
                 }
             } elseif (is_string($data)) {
-                $data = self::replaceValues($from, $to, $data);
+                // JSON 格式（如 Elementor _elementor_data 的雙層結構：序列化外層解開後得到 JSON 內層）
+                if (self::isJson($data)) {
+                    $data = self::replaceJsonValues($from, $to, $data);
+                } else {
+                    $data = self::replaceValues($from, $to, $data);
+                }
             }
 
             if ($serialized) {
@@ -363,6 +373,94 @@ final class SerializedReplacer
             return false;
         }
 
-        return (bool) preg_match('/^[aOsibd]:[0-9]+:/S', $data);
+        // E: 為 PHP 8.1+ enum 序列化格式
+        return (bool) preg_match('/^[aOsibdE]:[0-9]+:/S', $data);
+    }
+
+    /**
+     * 偵測字串是否為合法 JSON 物件或陣列
+     *
+     * 快速前置檢查後再呼叫 json_decode，避免對非 JSON 字串造成不必要開銷。
+     * 僅偵測物件（{...}）與陣列（[...]），排除純量 JSON（數字、字串、布林）。
+     */
+    private static function isJson(string $data): bool
+    {
+        $data = trim($data);
+
+        if (strlen($data) < 2) {
+            return false;
+        }
+
+        $first = $data[0];
+        $last  = $data[-1];
+
+        if (!(($first === '{' && $last === '}') || ($first === '[' && $last === ']'))) {
+            return false;
+        }
+
+        json_decode($data);
+
+        return json_last_error() === JSON_ERROR_NONE;
+    }
+
+    /**
+     * 對 JSON 格式字串執行遞迴 URL 替換
+     *
+     * 處理流程：
+     *   1. json_decode 解碼（自動處理 \/ 跳脫斜線，還原為真實 / 字元）
+     *   2. 遞迴替換所有字串節點中的 URL
+     *   3. json_encode 重新編碼，使用 JSON_UNESCAPED_SLASHES 避免 / 被重新跳脫
+     *
+     * 適用於 Elementor _elementor_data、Bricks Builder、Gutenberg block data 等 JSON 格式。
+     * 若 json_decode 失敗，fallback 為純字串替換（含 addcslashes 變體已在 $from 中）。
+     *
+     * @param string[] $from
+     * @param string[] $to
+     */
+    private static function replaceJsonValues(array $from, array $to, string $data): string
+    {
+        $decoded = json_decode($data, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE || $decoded === null) {
+            return self::replaceValues($from, $to, $data);
+        }
+
+        $replaced = self::replaceJsonNode($from, $to, $decoded);
+
+        $encoded = json_encode($replaced, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        if ($encoded === false) {
+            return self::replaceValues($from, $to, $data);
+        }
+
+        return $encoded;
+    }
+
+    /**
+     * 遞迴替換 JSON 節點中的所有字串值
+     *
+     * @param string[]             $from
+     * @param string[]             $to
+     * @param mixed                $node
+     * @return mixed
+     */
+    private static function replaceJsonNode(array $from, array $to, mixed $node): mixed
+    {
+        if (is_array($node)) {
+            foreach ($node as $key => $value) {
+                $node[$key] = self::replaceJsonNode($from, $to, $value);
+            }
+            return $node;
+        }
+
+        if (is_string($node)) {
+            // 若字串本身又是 JSON，遞迴處理（Elementor 巢狀 JSON 情境）
+            if (self::isJson($node)) {
+                return self::replaceJsonValues($from, $to, $node);
+            }
+            return self::replaceValues($from, $to, $node);
+        }
+
+        return $node;
     }
 }

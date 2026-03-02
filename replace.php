@@ -42,6 +42,11 @@ declare(strict_types=1);
  *   --extra-new=<value>       額外替換新值（可重複使用多次）
  */
 
+// Elementor 等 Page Builder 的 JSON 資料可能超過 PCRE 預設回溯限制
+// 提高上限，避免超長 SQL 字串的 regex 匹配靜默失敗
+ini_set('pcre.backtrack_limit', '10000000');
+ini_set('pcre.recursion_limit', '10000000');
+
 require_once __DIR__ . '/src/UrlVariantBuilder.php';
 require_once __DIR__ . '/src/SerializedReplacer.php';
 require_once __DIR__ . '/src/Replacer.php';
