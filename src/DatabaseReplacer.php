@@ -447,8 +447,29 @@ final class DatabaseReplacer
                     . " WHERE `{$primary_key}` = :pk";
 
                 $update_stmt = $this->_pdo->prepare( $update_sql );
-                $update_stmt->execute( $params );
-                $updated_count++;
+
+                try {
+                    $update_stmt->execute( $params );
+                    $updated_count++;
+                } catch ( PDOException $e ) {
+                    // MySQL 1366：欄位 charset 不支援 4-byte emoji（utf8 vs utf8mb4）
+                    // 逐欄嘗試，跳過有問題的欄位，其他欄位繼續替換
+                    if ( count( $updates ) > 1 && $this->_isCharsetError( $e ) ) {
+                        $partial_updated = $this->_updateColumnsOneByOne(
+                            $table,
+                            $primary_key,
+                            $pk_value,
+                            $updates
+                        );
+                        if ( $partial_updated ) {
+                            $updated_count++;
+                        }
+                    } elseif ( $this->_isCharsetError( $e ) ) {
+                        echo "\n[略過] {$table} pk={$pk_value}：欄位 charset 不支援 4-byte 字元（emoji），跳過此列\n";
+                    } else {
+                        throw $e;
+                    }
+                }
             }
 
             $offset += $chunk_size;
@@ -569,6 +590,69 @@ final class DatabaseReplacer
                 }
             )
         );
+    }
+
+    /**
+     * 判斷 PDOException 是否為 charset/encoding 相容性錯誤
+     *
+     * MySQL 錯誤碼：
+     *   1366 - Incorrect string value（utf8 欄位寫入 4-byte emoji）
+     *   1292 - Incorrect datetime value 等資料型別截斷
+     *
+     * @param PDOException $e 例外物件
+     *
+     * @return bool
+     */
+    private function _isCharsetError( PDOException $e ): bool
+    {
+        $code    = (string) $e->getCode();
+        $message = $e->getMessage();
+
+        return $code === 'HY000'
+            && (
+                str_contains( $message, '1366' )
+                || str_contains( $message, 'Incorrect string value' )
+            );
+    }
+
+    /**
+     * 逐欄位嘗試更新，跳過 charset 不相容的欄位
+     *
+     * 當整列批次 UPDATE 因某欄位含 4-byte emoji 而失敗時，
+     * 改為逐欄執行單欄 UPDATE，跳過有問題的欄位，確保其他欄位仍被替換。
+     *
+     * @param string               $table      資料表名稱
+     * @param string               $primary_key 主鍵欄位名稱
+     * @param mixed                $pk_value    主鍵值
+     * @param array<string, string> $updates    欄位 => 新值 對照表
+     *
+     * @return bool 是否有任何欄位成功更新
+     */
+    private function _updateColumnsOneByOne(
+        string $table,
+        string $primary_key,
+        mixed $pk_value,
+        array $updates
+    ): bool {
+        $any_updated = false;
+
+        foreach ( $updates as $col => $value ) {
+            $sql  = "UPDATE `{$table}` SET `{$col}` = :val WHERE `{$primary_key}` = :pk";
+            $stmt = $this->_pdo->prepare( $sql );
+
+            try {
+                $stmt->execute( array( ':val' => $value, ':pk' => $pk_value ) );
+                $any_updated = true;
+            } catch ( PDOException $e ) {
+                if ( $this->_isCharsetError( $e ) ) {
+                    echo "\n[略過] {$table}.{$col} pk={$pk_value}：欄位 charset 不支援 4-byte 字元（emoji），跳過此欄位\n";
+                } else {
+                    throw $e;
+                }
+            }
+        }
+
+        return $any_updated;
     }
 
     /**
