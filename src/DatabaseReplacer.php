@@ -424,7 +424,7 @@ final class DatabaseReplacer
      */
     private function _replaceValue( string $value ): string
     {
-        $value = $this->_serializedReplacer->replaceInSqlLine(
+        $value = $this->_serializedReplacer->replaceFieldValue(
             $value,
             $this->_oldValues,
             $this->_newValues,

@@ -77,6 +77,58 @@ final class SerializedReplacer
     }
 
     /**
+     * 對資料庫直連模式下的原始欄位值執行全套替換
+     *
+     * 與 replaceInSqlLine() 的差異：
+     *   - replaceInSqlLine() 設計給 SQL 行，需先用正則提取 '...' 字串後才替換
+     *   - 此方法設計給直連模式，欄位值本身即純字串，直接做 Base64 + 序列化安全替換
+     *
+     * 適用於 DatabaseReplacer，處理如 Elementor _elementor_data（JSON）、
+     * 序列化 PHP 物件、普通字串等各種欄位格式
+     *
+     * @param string[] $oldValues
+     * @param string[] $newValues
+     */
+    public function replaceFieldValue(
+        string $input,
+        array $oldValues,
+        array $newValues,
+        bool $visualComposer = false,
+        bool $oxygenBuilder = false,
+        bool $bethemeOrAvada = false,
+    ): string {
+        // Visual Composer：[vc_raw_html]BASE64[/vc_raw_html]
+        if ($visualComposer) {
+            $input = preg_replace_callback(
+                '/\[vc_raw_html\]([a-zA-Z0-9\/+]+={0,2})\[\/vc_raw_html\]/S',
+                fn(array $m) => $this->replaceBase64Callback($m, $oldValues, $newValues, '[vc_raw_html]', '[/vc_raw_html]', false),
+                $input
+            ) ?? $input;
+        }
+
+        // Oxygen Builder：\"code-php\":\"BASE64\"
+        if ($oxygenBuilder) {
+            $input = preg_replace_callback(
+                '/\\\\"(code-php|code-css|code-js)\\\\":\\\\"([a-zA-Z0-9\/+]+={0,2})\\\\"/S',
+                fn(array $m) => $this->replaceOxygenCallback($m, $oldValues, $newValues),
+                $input
+            ) ?? $input;
+        }
+
+        // BeTheme / Optimize Press / Avada Fusion Builder：'BASE64'
+        if ($bethemeOrAvada) {
+            $input = preg_replace_callback(
+                "/'([a-zA-Z0-9\/+]+={0,2})'/S",
+                fn(array $m) => $this->replaceBase64SerializedCallback($m, $oldValues, $newValues),
+                $input
+            ) ?? $input;
+        }
+
+        // 直接對欄位值做序列化安全替換（無需 SQL 引號提取）
+        return (string) self::replaceSerializedValues($oldValues, $newValues, $input, false);
+    }
+
+    /**
      * 批次純文字替換（raw values，不含序列化處理）
      *
      * @param string[] $oldValues
