@@ -11,6 +11,10 @@ namespace WpMigrate\Src;
  * 遞迴解序列化後替換，再重新序列化（自動修正長度計數）
  * 同時處理 Base64 編碼儲存的 Page Builder 資料
  *
+ * 特殊情境處理：
+ *   - 當 unserialize() 遇到未知類別（如 WC_Email_xxx）時，PHP 返回 __PHP_Incomplete_Class
+ *     此時 fallback 改用 regex 直接對序列化字串替換，並修正 s:N: 長度計數
+ *
  * 參考：class-ai1wm-database-utility.php + class-ai1wm-database.php
  */
 final class SerializedReplacer
@@ -146,6 +150,11 @@ final class SerializedReplacer
     /**
      * 遞迴序列化安全替換
      *
+     * 特殊情境：PHP 在 CLI 環境中遇到未定義類別（如 WooCommerce 的 WC_Email_xxx）時，
+     * unserialize() 會返回 __PHP_Incomplete_Class 實例而非 false。
+     * 此情境下 fallback 使用 replaceInSerializedString() 對原始序列化字串
+     * 做 regex 替換並修正 s:N: 長度計數，確保 WooCommerce email 等設定仍能被替換。
+     *
      * @param string[] $from
      * @param string[] $to
      * @param mixed    $data
@@ -155,11 +164,18 @@ final class SerializedReplacer
         try {
             if (is_string($data) && self::isSerialized($data)) {
                 $unserialized = @unserialize($data);
+
+                if ($unserialized instanceof \__PHP_Incomplete_Class) {
+                    // CLI 環境下類別不存在（如 WC_Email_xxx），
+                    // fallback：直接對序列化字串做 regex 替換並修正 s:N: 長度
+                    return self::replaceInSerializedString($from, $to, $data);
+                }
+
                 if ($unserialized !== false) {
                     $data = self::replaceSerializedValues($from, $to, $unserialized, true);
                 } else {
-                    // unserialize 失敗時直接字串替換
-                    $data = self::replaceValues($from, $to, $data);
+                    // unserialize 完全失敗時，對原始字串做 regex 替換
+                    $data = self::replaceInSerializedString($from, $to, $data);
                 }
             } elseif (is_array($data)) {
                 $tmp = [];
@@ -168,12 +184,16 @@ final class SerializedReplacer
                 }
                 $data = $tmp;
             } elseif (is_object($data)) {
-                if (!($data instanceof \__PHP_Incomplete_Class)) {
-                    $props = get_object_vars($data);
-                    foreach ($props as $key => $value) {
-                        if (!empty($data->$key)) {
-                            $data->$key = self::replaceSerializedValues($from, $to, $value, false);
-                        }
+                if ($data instanceof \__PHP_Incomplete_Class) {
+                    // 直接拿到 __PHP_Incomplete_Class 物件（非從字串 unserialize 而來）
+                    $raw = serialize($data);
+                    return self::replaceInSerializedString($from, $to, $raw);
+                }
+
+                $props = get_object_vars($data);
+                foreach ($props as $key => $value) {
+                    if (!empty($data->$key)) {
+                        $data->$key = self::replaceSerializedValues($from, $to, $value, false);
                     }
                 }
             } elseif (is_string($data)) {
@@ -187,6 +207,37 @@ final class SerializedReplacer
         }
 
         return $data;
+    }
+
+    /**
+     * 對序列化字串做 regex 替換並修正 s:N: 長度計數
+     *
+     * 用於以下兩種 fallback 情境：
+     *   1. unserialize() 返回 __PHP_Incomplete_Class（未定義類別，如 WC_Email_xxx）
+     *   2. unserialize() 完全失敗（序列化字串損壞）
+     *
+     * 處理流程：
+     *   - 匹配所有 s:N:"value" 片段
+     *   - 對 value 套用 replaceValues() 做字串替換
+     *   - 替換後重新計算 strlen() 並更新 s:M: 計數
+     *
+     * @param string[] $from
+     * @param string[] $to
+     */
+    public static function replaceInSerializedString(array $from, array $to, string $data): string
+    {
+        if (empty($from) || empty($to)) {
+            return $data;
+        }
+
+        return (string) preg_replace_callback(
+            '/s:(\d+):"(.*?)";/s',
+            static function (array $matches) use ($from, $to): string {
+                $replaced = self::replaceValues($from, $to, $matches[2]);
+                return 's:' . strlen($replaced) . ':"' . $replaced . '";';
+            },
+            $data
+        );
     }
 
     // -------------------------------------------------------------------------
