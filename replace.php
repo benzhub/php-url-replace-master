@@ -47,6 +47,29 @@ declare(strict_types=1);
 ini_set('pcre.backtrack_limit', '10000000');
 ini_set('pcre.recursion_limit', '10000000');
 
+// 直連模式需要 pdo_mysql。若未載入且環境為 docker-php，自動安裝並重啟
+if (!extension_loaded('pdo_mysql')) {
+    $is_db_mode = false;
+    foreach ($argv ?? [] as $arg) {
+        if (str_starts_with($arg, '--wp-root')) {
+            $is_db_mode = true;
+            break;
+        }
+    }
+
+    if ($is_db_mode) {
+        $ext_install = trim((string) shell_exec('which docker-php-ext-install 2>/dev/null'));
+        if ($ext_install !== '') {
+            echo "[資訊] pdo_mysql 未載入，正在安裝（docker-php-ext-install）...\n";
+            passthru('docker-php-ext-install pdo_mysql 2>&1');
+            echo "[資訊] 安裝完成，重新執行腳本\n";
+            $cmd = implode(' ', array_map('escapeshellarg', $argv));
+            passthru("php {$cmd}");
+            exit(0);
+        }
+    }
+}
+
 require_once __DIR__ . '/src/UrlVariantBuilder.php';
 require_once __DIR__ . '/src/SerializedReplacer.php';
 require_once __DIR__ . '/src/Replacer.php';

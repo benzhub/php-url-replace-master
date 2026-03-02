@@ -296,19 +296,39 @@ final class DatabaseReplacer
      */
     private function _connect(): void
     {
+        if ( ! extension_loaded( 'pdo_mysql' ) ) {
+            throw new RuntimeException(
+                'PHP 擴充 pdo_mysql 未載入。請執行：docker-php-ext-install pdo_mysql 或 apt-get install php-mysql'
+            );
+        }
+
         $dsn = $this->config->buildDsn();
+
+        $options = array(
+            PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+            PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+        );
+
+        // PDO::MYSQL_ATTR_INIT_COMMAND 僅在 pdo_mysql 已載入時才存在
+        if ( defined( 'PDO::MYSQL_ATTR_INIT_COMMAND' ) ) {
+            $options[ PDO::MYSQL_ATTR_INIT_COMMAND ] = "SET NAMES '" . $this->config->getDbCharset() . "'";
+        }
+
+        $charset_via_sql = ! defined( 'PDO::MYSQL_ATTR_INIT_COMMAND' );
 
         try {
             $this->_pdo = new PDO(
                 $dsn,
                 $this->config->getDbUser(),
                 $this->config->getDbPassword(),
-                array(
-                    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                    PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES '" . $this->config->getDbCharset() . "'",
-                )
+                $options
             );
+
+            // 若 pdo_mysql 常數不可用，改用 SET NAMES 指令設定字元集
+            if ( $charset_via_sql ) {
+                $charset = $this->config->getDbCharset() ?: 'utf8';
+                $this->_pdo->exec( "SET NAMES '{$charset}'" );
+            }
         } catch ( PDOException $e ) {
             throw new RuntimeException( 'MySQL 連線失敗：' . $e->getMessage(), previous: $e );
         }
