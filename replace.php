@@ -102,6 +102,7 @@ $options = getopt('', [
     'visual-composer',
     'oxygen-builder',
     'betheme-avada',
+    'no-loose',
     'extra-old:',
     'extra-new:',
     'help',
@@ -165,6 +166,7 @@ $replaceEmail   = !isset($options['no-email-replace']);
 $visualComposer = isset($options['visual-composer']);
 $oxygenBuilder  = isset($options['oxygen-builder']);
 $bethemeAvada   = isset($options['betheme-avada']);
+$looseMode      = !isset($options['no-loose']);
 
 // 驗證 URL 格式
 foreach (['old-url' => $oldUrl, 'new-url' => $newUrl] as $param => $url) {
@@ -200,7 +202,12 @@ $builder = new UrlVariantBuilder(
     replaceEmail: $replaceEmail,
     oldPath: $oldPath,
     newPath: $newPath,
+    looseMode: $looseMode,
 );
+
+if (!$looseMode) {
+    echo "[資訊] 寬鬆模式已停用（--no-loose）\n";
+}
 
 foreach ($extraOld as $i => $extra) {
     $builder->addCustomPair($extra, $extraNew[$i]);

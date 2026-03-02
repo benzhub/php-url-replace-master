@@ -30,6 +30,7 @@ final class UrlVariantBuilder
         private readonly bool $replaceEmail = true,
         private readonly string $oldPath = '',
         private readonly string $newPath = '',
+        private readonly bool $looseMode = true,
     ) {}
 
     /**
@@ -43,6 +44,10 @@ final class UrlVariantBuilder
 
         if ($this->oldPath !== '' && $this->newPath !== '') {
             $this->addPathVariants($this->oldPath, $this->newPath);
+        }
+
+        if ($this->looseMode) {
+            $this->addLooseVariants($this->oldUrl, $this->newUrl);
         }
 
         return [
@@ -132,6 +137,52 @@ final class UrlVariantBuilder
             $newEmailDomain = str_ireplace('@www.', '@', sprintf('@%s', $newDomain));
             $this->addIfNotExists($this->oldValues, $this->newValues, sprintf('@%s', $oldDomain), $newEmailDomain);
         }
+    }
+
+    /**
+     * 寬鬆模式（--loose）額外變體
+     *
+     * 在標準變體（plain / urlencode / rawurlencode / addcslashes）基礎上額外加入：
+     *
+     * 1. Trailing slash 變體：確保 `https://old.com/` 與 `https://old.com` 都能被替換
+     *    （部分頁面建構器或外掛會在 URL 末尾加上斜線儲存）
+     *
+     * 2. 跨 scheme 互換：`http://old.com` → `https://new.com`（及反向）
+     *    用於修復 Mixed Content 問題，或舊站 http 新站 https 的殘留 URL
+     */
+    private function addLooseVariants(string $oldUrl, string $newUrl): void
+    {
+        $oldUrlTrailing = rtrim($oldUrl, '/') . '/';
+        $newUrlNoTrail  = rtrim($newUrl, '/');
+
+        // Trailing slash 變體（含四種編碼）
+        $this->addIfNotExists($this->oldValues, $this->newValues, $oldUrlTrailing, $newUrlNoTrail);
+        $this->addIfNotExists($this->oldValues, $this->newValues, urlencode($oldUrlTrailing), urlencode($newUrlNoTrail));
+        $this->addIfNotExists($this->oldValues, $this->newValues, rawurlencode($oldUrlTrailing), rawurlencode($newUrlNoTrail));
+        $this->addIfNotExists($this->oldValues, $this->newValues, addcslashes($oldUrlTrailing, '/'), addcslashes($newUrlNoTrail, '/'));
+
+        // 跨 scheme 互換：http://old → https://new（及 https://old → http://new）
+        $oldScheme = (string) parse_url($oldUrl, PHP_URL_SCHEME);
+        $newScheme = (string) parse_url($newUrl, PHP_URL_SCHEME);
+
+        if ($oldScheme === 'http') {
+            $oldHttps = preg_replace('#^http:#', 'https:', $oldUrl) ?? $oldUrl;
+            $this->addIfNotExists($this->oldValues, $this->newValues, $oldHttps, $newUrl);
+            $this->addIfNotExists($this->oldValues, $this->newValues, urlencode($oldHttps), urlencode($newUrl));
+            $this->addIfNotExists($this->oldValues, $this->newValues, rawurlencode($oldHttps), rawurlencode($newUrl));
+            $this->addIfNotExists($this->oldValues, $this->newValues, addcslashes($oldHttps, '/'), addcslashes($newUrl, '/'));
+        } elseif ($oldScheme === 'https') {
+            $oldHttp = preg_replace('#^https:#', 'http:', $oldUrl) ?? $oldUrl;
+            $this->addIfNotExists($this->oldValues, $this->newValues, $oldHttp, $newUrl);
+            $this->addIfNotExists($this->oldValues, $this->newValues, urlencode($oldHttp), urlencode($newUrl));
+            $this->addIfNotExists($this->oldValues, $this->newValues, rawurlencode($oldHttp), rawurlencode($newUrl));
+            $this->addIfNotExists($this->oldValues, $this->newValues, addcslashes($oldHttp, '/'), addcslashes($newUrl, '/'));
+        }
+
+        // www 互換的 trailing slash 變體
+        $oldUrlWwwInversion = $this->invertWww($oldUrl);
+        $oldInvTrailing     = rtrim($oldUrlWwwInversion, '/') . '/';
+        $this->addIfNotExists($this->oldValues, $this->newValues, $oldInvTrailing, $newUrlNoTrail);
     }
 
     /**

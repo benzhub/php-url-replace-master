@@ -342,14 +342,47 @@ final class WpConfigReader
     /**
      * 提取 $table_prefix 變數的值
      *
+     * 支援三種常見寫法：
+     *   1. 字面量：$table_prefix = 'wp_';
+     *   2. getenv()：$table_prefix = getenv('WP_TABLE_PREFIX');
+     *   3. 環境變數（$_ENV / $_SERVER）：無法靜態解析，fallback 'wp_' 並輸出警告
+     *
      * @param string $source PHP 原始碼
      *
      * @return string
      */
     private function _extractTablePrefix( string $source ): string
     {
+        // 字面量賦值
         if ( preg_match( '/\$table_prefix\s*=\s*[\'"]([a-zA-Z0-9_]+)[\'"]\s*;/', $source, $m ) ) {
             return $m[1];
+        }
+
+        // getenv() 賦值：$table_prefix = getenv('ENV_VAR');
+        if ( preg_match( '/\$table_prefix\s*=\s*getenv\s*\(\s*[\'"]([^\'"]+)[\'"]\s*\)\s*;/', $source, $m ) ) {
+            $env_name = $m[1];
+            $value    = getenv( $env_name );
+
+            if ( $value !== false && preg_match( '/^[a-zA-Z0-9_]+$/', $value ) ) {
+                return $value;
+            }
+
+            fwrite(
+                STDERR,
+                "[警告] \$table_prefix 使用 getenv('{$env_name}')，但環境變數未設定或格式無效，"
+                . "fallback 使用 'wp_'\n"
+            );
+
+            return 'wp_';
+        }
+
+        // 無法解析（如 $_ENV、條件判斷、變數間接賦值等），輸出警告
+        if ( preg_match( '/\$table_prefix\s*=/', $source ) ) {
+            fwrite(
+                STDERR,
+                "[警告] 無法靜態解析 \$table_prefix（可能使用 \$_ENV、\$_SERVER 或條件判斷），"
+                . "fallback 使用 'wp_'，請以 --table-prefix 參數手動指定\n"
+            );
         }
 
         return 'wp_';

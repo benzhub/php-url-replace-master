@@ -197,7 +197,7 @@ final class SerializedReplacer
 
                 $props = get_object_vars($data);
                 foreach ($props as $key => $value) {
-                    if (!empty($data->$key)) {
+                    if (isset($data->$key) && $data->$key !== null) {
                         $data->$key = self::replaceSerializedValues($from, $to, $value, false);
                     }
                 }
@@ -220,16 +220,16 @@ final class SerializedReplacer
     }
 
     /**
-     * 對序列化字串做 regex 替換並修正 s:N: 長度計數
+     * 對序列化字串做精確替換並修正 s:N: 長度計數
      *
      * 用於以下兩種 fallback 情境：
      *   1. unserialize() 返回 __PHP_Incomplete_Class（未定義類別，如 WC_Email_xxx）
      *   2. unserialize() 完全失敗（序列化字串損壞）
      *
-     * 處理流程：
-     *   - 匹配所有 s:N:"value" 片段
-     *   - 對 value 套用 replaceValues() 做字串替換
-     *   - 替換後重新計算 strlen() 並更新 s:M: 計數
+     * 處理流程（精確 substr 策略，避免 `.*?` regex 在含 `";` 的值中截斷）：
+     *   - 用 preg_match + PREG_OFFSET_CAPTURE 定位每個 s:N:" 的位置與長度聲明
+     *   - 按聲明的 N 個位元組精確截取字串值（不依賴 `";` 作為結束符）
+     *   - 對截取出的值套用替換，重新計算 strlen() 並更新計數
      *
      * @param string[] $from
      * @param string[] $to
@@ -240,14 +240,39 @@ final class SerializedReplacer
             return $data;
         }
 
-        return (string) preg_replace_callback(
-            '/s:(\d+):"(.*?)";/s',
-            static function (array $matches) use ($from, $to): string {
-                $replaced = self::replaceValues($from, $to, $matches[2]);
-                return 's:' . strlen($replaced) . ':"' . $replaced . '";';
-            },
-            $data
-        );
+        $map    = array_combine($from, $to);
+        $offset = 0;
+        $result = '';
+        $len    = strlen($data);
+
+        while ($offset < $len) {
+            if (!preg_match('/s:(\d+):"/', $data, $m, PREG_OFFSET_CAPTURE, $offset)) {
+                $result .= substr($data, $offset);
+                break;
+            }
+
+            $matchStart = (int) $m[0][1];
+            $strLen     = (int) $m[1][0];
+            $valueStart = $matchStart + strlen($m[0][0]);
+
+            // 確認聲明長度後的兩個字元是 "; 才算合法的 s:N: 片段
+            if (substr($data, $valueStart + $strLen, 2) !== '";') {
+                // 結構不符，略過此位置一個字元繼續掃描
+                $result .= substr($data, $offset, $matchStart - $offset + 1);
+                $offset  = $matchStart + 1;
+                continue;
+            }
+
+            $value    = substr($data, $valueStart, $strLen);
+            $replaced = strtr($value, $map);
+            $newLen   = strlen($replaced);
+
+            $result .= substr($data, $offset, $matchStart - $offset);
+            $result .= 's:' . $newLen . ':"' . $replaced . '";';
+            $offset  = $valueStart + $strLen + 2;
+        }
+
+        return $result;
     }
 
     // -------------------------------------------------------------------------
@@ -357,7 +382,7 @@ final class SerializedReplacer
 
     public static function base64Validate(string $data): bool
     {
-        return base64_encode(base64_decode($data, true)) === $data;
+        return base64_encode(base64_decode($data)) === $data;
     }
 
     /**

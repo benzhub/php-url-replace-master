@@ -356,6 +356,8 @@ final class DatabaseReplacer
      * 使用 LIMIT/OFFSET 分頁替代 fetchAll()，每批最多 CHUNK_SIZE 列，
      * 確保在記憶體受限的容器（如 512Mi）中也能處理大型 wp_postmeta。
      *
+     * 大表（>= 1000 列）每個 chunk 結束後即時顯示進度，避免看起來卡住。
+     *
      * @param string $table 資料表名稱
      *
      * @return void
@@ -379,6 +381,12 @@ final class DatabaseReplacer
             ', ',
             array_map( fn( $c ) => "`{$c}`", array( ...$text_columns, $primary_key ) )
         );
+
+        // 取得總列數，用於進度顯示
+        $count_stmt = $this->_pdo->prepare( "SELECT COUNT(*) FROM `{$table}`" );
+        $count_stmt->execute();
+        $total_rows    = (int) $count_stmt->fetchColumn();
+        $show_progress = $total_rows >= 1000;
 
         $chunk_size    = 500;
         $offset        = 0;
@@ -445,7 +453,19 @@ final class DatabaseReplacer
 
             $offset += $chunk_size;
 
+            // 大表進度顯示：每個 chunk 結束後用 \r 覆蓋同一行
+            if ( $show_progress ) {
+                $scanned = min( $offset, $total_rows );
+                $percent = $total_rows > 0 ? round( $scanned / $total_rows * 100, 1 ) : 100.0;
+                echo "\r[進度] {$table}：已掃描 {$scanned} / {$total_rows}（{$percent}%），已替換 {$updated_count} 列";
+            }
+
         } while ( count( $rows ) === $chunk_size );
+
+        // 大表進度結束後換行，保持終端整潔
+        if ( $show_progress ) {
+            echo "\n";
+        }
 
         $this->_stats[ $table ] = $updated_count;
 
