@@ -351,7 +351,10 @@ final class DatabaseReplacer
     }
 
     /**
-     * 處理單一資料表：找出 TEXT 類欄位，逐列讀取、替換、寫回
+     * 處理單一資料表：分頁讀取、替換、寫回，避免大表 OOM
+     *
+     * 使用 LIMIT/OFFSET 分頁替代 fetchAll()，每批最多 CHUNK_SIZE 列，
+     * 確保在記憶體受限的容器（如 512Mi）中也能處理大型 wp_postmeta。
      *
      * @param string $table 資料表名稱
      *
@@ -377,54 +380,72 @@ final class DatabaseReplacer
             array_map( fn( $c ) => "`{$c}`", array( ...$text_columns, $primary_key ) )
         );
 
-        $rows          = $this->_pdo->query( "SELECT {$col_list} FROM `{$table}`" )->fetchAll();
+        $chunk_size    = 500;
+        $offset        = 0;
         $updated_count = 0;
 
-        foreach ( $rows as $row ) {
-            $pk_value = $row[ $primary_key ];
-            $changed  = false;
-            $updates  = array();
+        do {
+            $stmt = $this->_pdo->prepare(
+                "SELECT {$col_list} FROM `{$table}`"
+                . " ORDER BY `{$primary_key}`"
+                . " LIMIT {$chunk_size} OFFSET {$offset}"
+            );
+            $stmt->execute();
+            $rows = $stmt->fetchAll();
 
-            foreach ( $text_columns as $col ) {
-                $original = $row[ $col ] ?? '';
+            if ( empty( $rows ) ) {
+                break;
+            }
 
-                if ( $original === '' || $original === null ) {
+            foreach ( $rows as $row ) {
+                $pk_value = $row[ $primary_key ];
+                $changed  = false;
+                $updates  = array();
+
+                foreach ( $text_columns as $col ) {
+                    $original = $row[ $col ] ?? '';
+
+                    if ( $original === '' || $original === null ) {
+                        continue;
+                    }
+
+                    if ( $this->_shouldIgnoreRow( $table, $col, $row ) ) {
+                        continue;
+                    }
+
+                    $replaced = $this->_replaceValue( (string) $original );
+
+                    if ( $replaced !== $original ) {
+                        $updates[ $col ] = $replaced;
+                        $changed         = true;
+                    }
+                }
+
+                if ( ! $changed ) {
                     continue;
                 }
 
-                if ( $this->_shouldIgnoreRow( $table, $col, $row ) ) {
-                    continue;
+                $set_parts = array();
+                $params    = array();
+
+                foreach ( $updates as $col => $value ) {
+                    $set_parts[] = "`{$col}` = :{$col}";
+                    $params[ ":{$col}" ] = $value;
                 }
 
-                $replaced = $this->_replaceValue( (string) $original );
+                $params[':pk'] = $pk_value;
+                $update_sql    = "UPDATE `{$table}` SET "
+                    . implode( ', ', $set_parts )
+                    . " WHERE `{$primary_key}` = :pk";
 
-                if ( $replaced !== $original ) {
-                    $updates[ $col ] = $replaced;
-                    $changed         = true;
-                }
+                $update_stmt = $this->_pdo->prepare( $update_sql );
+                $update_stmt->execute( $params );
+                $updated_count++;
             }
 
-            if ( ! $changed ) {
-                continue;
-            }
+            $offset += $chunk_size;
 
-            $set_parts = array();
-            $params    = array();
-
-            foreach ( $updates as $col => $value ) {
-                $set_parts[] = "`{$col}` = :{$col}";
-                $params[ ":{$col}" ] = $value;
-            }
-
-            $params[':pk'] = $pk_value;
-            $sql = "UPDATE `{$table}` SET "
-                . implode( ', ', $set_parts )
-                . " WHERE `{$primary_key}` = :pk";
-
-            $stmt = $this->_pdo->prepare( $sql );
-            $stmt->execute( $params );
-            $updated_count++;
-        }
+        } while ( count( $rows ) === $chunk_size );
 
         $this->_stats[ $table ] = $updated_count;
 
