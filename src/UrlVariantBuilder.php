@@ -187,13 +187,13 @@ final class UrlVariantBuilder
     private function addLooseVariants(string $oldUrl, string $newUrl): void
     {
         $oldUrlTrailing = rtrim($oldUrl, '/') . '/';
-        $newUrlNoTrail  = rtrim($newUrl, '/');
+        $newUrlTrailing = rtrim($newUrl, '/') . '/';
 
         // Trailing slash 變體（含四種編碼）
-        $this->addIfNotExists($this->oldValues, $this->newValues, $oldUrlTrailing, $newUrlNoTrail);
-        $this->addIfNotExists($this->oldValues, $this->newValues, urlencode($oldUrlTrailing), urlencode($newUrlNoTrail));
-        $this->addIfNotExists($this->oldValues, $this->newValues, rawurlencode($oldUrlTrailing), rawurlencode($newUrlNoTrail));
-        $this->addIfNotExists($this->oldValues, $this->newValues, addcslashes($oldUrlTrailing, '/'), addcslashes($newUrlNoTrail, '/'));
+        $this->addIfNotExists($this->oldValues, $this->newValues, $oldUrlTrailing, $newUrlTrailing);
+        $this->addIfNotExists($this->oldValues, $this->newValues, urlencode($oldUrlTrailing), urlencode($newUrlTrailing));
+        $this->addIfNotExists($this->oldValues, $this->newValues, rawurlencode($oldUrlTrailing), rawurlencode($newUrlTrailing));
+        $this->addIfNotExists($this->oldValues, $this->newValues, addcslashes($oldUrlTrailing, '/'), addcslashes($newUrlTrailing, '/'));
 
         // 跨 scheme 互換：http://old → https://new（及 https://old → http://new）
         $oldScheme = (string) parse_url($oldUrl, PHP_URL_SCHEME);
@@ -215,7 +215,7 @@ final class UrlVariantBuilder
         // www 互換的 trailing slash 變體
         $oldUrlWwwInversion = $this->invertWww($oldUrl);
         $oldInvTrailing     = rtrim($oldUrlWwwInversion, '/') . '/';
-        $this->addIfNotExists($this->oldValues, $this->newValues, $oldInvTrailing, $newUrlNoTrail);
+        $this->addIfNotExists($this->oldValues, $this->newValues, $oldInvTrailing, $newUrlTrailing);
     }
 
     /**
