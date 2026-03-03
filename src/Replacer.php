@@ -12,9 +12,15 @@ use RuntimeException;
  * 仿照 All-in-One WP Migration 的 Ai1wm_Database::import() 流程
  * 逐行串流讀取 SQL，依序執行：
  *   1. 表前綴替換
- *   2. Base64 + 序列化安全替換
- *   3. raw values 直接替換
+ *   2. 跳過快取查詢（transient / wc_session）
+ *   3. Base64 + 序列化安全替換
+ *   4. raw values 直接替換
  * 替換完成後覆寫原始 SQL 檔案
+ *
+ * 效能優化：
+ *   - 在 processQuery() 中先對整條 SQL 做 containsAny 快速預檢
+ *     完全不含任何 old value 時直接跳過所有替換步驟（仿 AI1WM replace_table_values()）
+ *   - 大語句（超過 maxStatementBytes）跳過 regex 替換，直接透傳，避免記憶體問題
  *
  * 參考：class-ai1wm-database.php import() / replace_table_values()
  */
@@ -40,9 +46,15 @@ final class Replacer
     /** @var string[] */
     private array $newRawValues = [];
 
-    private bool $visualComposer  = false;
-    private bool $oxygenBuilder   = false;
-    private bool $bethemeOrAvada  = false;
+    private bool $visualComposer = false;
+    private bool $oxygenBuilder  = false;
+    private bool $bethemeOrAvada = false;
+
+    /**
+     * 最大允許語句大小（bytes），超過此大小的語句不做 regex 替換，直接透傳
+     * 可透過 setMaxStatementBytes() 調整，預設 64 MB
+     */
+    private int $maxStatementBytes = 67_108_864; // 64 MB
 
     public function __construct()
     {
@@ -113,6 +125,16 @@ final class Replacer
         return $this;
     }
 
+    /**
+     * 設定大語句最大允許大小（bytes）
+     * 超過此大小的語句不做 regex 替換，直接透傳（但仍做 raw value 替換）
+     */
+    public function setMaxStatementBytes(int $bytes): static
+    {
+        $this->maxStatementBytes = $bytes;
+        return $this;
+    }
+
     // -------------------------------------------------------------------------
     // 核心執行
     // -------------------------------------------------------------------------
@@ -120,7 +142,7 @@ final class Replacer
     /**
      * 對 SQL 檔案執行全面替換並覆寫原始檔案
      *
-     * 採用「先寫暫存檔、完成後替換」策略，避免中途失敗導致原檔損毀
+     * 採用「先寫暫存檔、完成後替換」策略，避免中途失敗導致原檔損毀（仿 AI1WM 原子性保障）
      */
     public function process(string $sqlFilePath): void
     {
@@ -172,6 +194,10 @@ final class Replacer
 
     /**
      * 對單一完整 SQL 語句執行所有替換
+     *
+     * 效能優化（仿 AI1WM replace_table_values()）：
+     *   - Step 0：若整條 SQL 不含任何 old value，直接跳過所有序列化替換步驟
+     *   - 大語句（超過 maxStatementBytes）跳過 regex 替換，直接做 raw value 替換
      */
     public function processQuery(string $query): string
     {
@@ -183,18 +209,33 @@ final class Replacer
             return $query;
         }
 
-        // Step 3：BASE64 + 序列化安全替換
-        $query = $this->serializedReplacer->replaceInSqlLine(
-            $query,
-            $this->oldValues,
-            $this->newValues,
-            $this->visualComposer,
-            $this->oxygenBuilder,
-            $this->bethemeOrAvada,
-        );
+        // Step 3：大語句保護（超過閾值的語句跳過 regex 替換，只做 raw value 替換）
+        $queryLen = strlen($query);
+        if ($queryLen > $this->maxStatementBytes) {
+            // 仍需 raw value 替換（domain,'path/' 格式）
+            return SerializedReplacer::replaceValues($this->oldRawValues, $this->newRawValues, $query);
+        }
 
-        // Step 4：raw values 直接替換（domain,'path/' 格式）
-        $query = SerializedReplacer::replaceValues($this->oldRawValues, $this->newRawValues, $query);
+        // Step 4：快速預檢（仿 AI1WM replace_table_values() 的 strpos 預檢）
+        // 若整條 SQL 不含任何 old value（escape 後格式），直接跳過序列化替換
+        $needsSerializedReplace = SerializedReplacer::containsAny($query, $this->oldValues);
+
+        if ($needsSerializedReplace) {
+            // Step 5：BASE64 + 序列化安全替換
+            $query = $this->serializedReplacer->replaceInSqlLine(
+                $query,
+                $this->oldValues,
+                $this->newValues,
+                $this->visualComposer,
+                $this->oxygenBuilder,
+                $this->bethemeOrAvada,
+            );
+        }
+
+        // Step 6：raw values 直接替換（domain,'path/' 格式）
+        if (!empty($this->oldRawValues)) {
+            $query = SerializedReplacer::replaceValues($this->oldRawValues, $this->newRawValues, $query);
+        }
 
         return $query;
     }

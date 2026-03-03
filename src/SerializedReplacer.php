@@ -20,6 +20,43 @@ namespace WpMigrate\Src;
 final class SerializedReplacer
 {
     /**
+     * replaceInSerializedString 最大迭代次數，防止畸形序列化字串導致無限迴圈
+     */
+    private const MAX_ITERATIONS = 100_000;
+
+    /**
+     * 單一欄位替換最長允許時間（秒）
+     * 超過此時間將 fallback 為純文字替換
+     */
+    private const MAX_REPLACE_SECONDS = 5.0;
+
+    /**
+     * MySQL escape map（類別常數，避免每次 array_combine）
+     */
+    private const ESCAPE_MAP = [
+        "\x00" => '\\0',
+        "\n"   => '\\n',
+        "\r"   => '\\r',
+        '\\'   => '\\\\',
+        "'"    => "\\'",
+        '"'    => '\\"',
+        "\x1a" => '\\Z',
+    ];
+
+    /**
+     * MySQL unescape map
+     */
+    private const UNESCAPE_MAP = [
+        '\\0'  => "\x00",
+        '\\n'  => "\n",
+        '\\r'  => "\r",
+        '\\\\' => '\\',
+        "\\'"  => "'",
+        '\\"'  => '"',
+        '\\Z'  => "\x1a",
+    ];
+
+    /**
      * 對 SQL 行執行所有替換（Base64 → 序列化 → 普通字串）
      *
      * @param string[] $oldValues
@@ -61,13 +98,8 @@ final class SerializedReplacer
         }
 
         // 序列化字串替換（每個 SQL 字串值用 preg_replace_callback 提取後處理）
-        $needsReplace = false;
-        foreach ($oldValues as $old) {
-            if (str_contains($input, self::escapeMysql($old))) {
-                $needsReplace = true;
-                break;
-            }
-        }
+        // 仿 AI1WM replace_table_values()：先快速檢查是否含任何舊值再執行 regex
+        $needsReplace = self::containsAny($input, $oldValues);
 
         if ($needsReplace) {
             $input = preg_replace_callback(
@@ -153,7 +185,7 @@ final class SerializedReplacer
     }
 
     /**
-     * 遞迴序列化安全替換
+     * 遞迴序列化安全替換（仿 AI1WM replace_serialized_values()）
      *
      * 特殊情境：PHP 在 CLI 環境中遇到未定義類別（如 WooCommerce 的 WC_Email_xxx）時，
      * unserialize() 會返回 __PHP_Incomplete_Class 實例而非 false。
@@ -188,6 +220,7 @@ final class SerializedReplacer
                     $tmp[$key] = self::replaceSerializedValues($from, $to, $value, false);
                 }
                 $data = $tmp;
+                unset($tmp);
             } elseif (is_object($data)) {
                 if ($data instanceof \__PHP_Incomplete_Class) {
                     // 直接拿到 __PHP_Incomplete_Class 物件（非從字串 unserialize 而來）
@@ -226,6 +259,10 @@ final class SerializedReplacer
      *   - 按聲明的 N 個位元組精確截取字串值（不依賴 `";` 作為結束符）
      *   - 對截取出的值套用替換，重新計算 strlen() 並更新計數
      *
+     * 防護：
+     *   - 加入最大迭代次數（MAX_ITERATIONS）防止畸形字串無限迴圈
+     *   - 加入執行時間保護（MAX_REPLACE_SECONDS），超時 fallback 為純文字替換
+     *
      * @param string[] $from
      * @param string[] $to
      */
@@ -235,12 +272,26 @@ final class SerializedReplacer
             return $data;
         }
 
-        $map    = array_combine($from, $to);
-        $offset = 0;
-        $result = '';
-        $len    = strlen($data);
+        $map        = array_combine($from, $to);
+        $offset     = 0;
+        $result     = '';
+        $len        = strlen($data);
+        $iterations = 0;
+        $startTime  = microtime(true);
 
         while ($offset < $len) {
+            $iterations++;
+
+            // 防護：超過最大迭代次數，fallback 為純文字替換
+            if ($iterations > self::MAX_ITERATIONS) {
+                return strtr($data, $map);
+            }
+
+            // 防護：超過最長執行時間，fallback 為純文字替換
+            if ($iterations % 1000 === 0 && (microtime(true) - $startTime) > self::MAX_REPLACE_SECONDS) {
+                return strtr($data, $map);
+            }
+
             if (!preg_match('/s:(\d+):"/', $data, $m, PREG_OFFSET_CAPTURE, $offset)) {
                 $result .= substr($data, $offset);
                 break;
@@ -268,6 +319,43 @@ final class SerializedReplacer
         }
 
         return $result;
+    }
+
+    // -------------------------------------------------------------------------
+    // 快速預檢工具
+    // -------------------------------------------------------------------------
+
+    /**
+     * 快速預檢：字串是否包含任意一個舊值
+     * 仿 AI1WM replace_table_values() 中的 strpos 預檢機制
+     *
+     * @param string[] $haystack 待搜尋字串（已 MySQL escape 格式，或原始欄位值）
+     * @param string[] $needles  舊值陣列
+     */
+    public static function containsAny(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($haystack, $needle)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 快速預檢（針對 SQL 行中已 MySQL escape 的舊值）
+     * AI1WM 在 replace_table_values() 中用 $this->escape($old_value) 做預檢
+     *
+     * @param string[] $needles 原始舊值陣列（未 escape）
+     */
+    public static function containsAnyEscaped(string $haystack, array $needles): bool
+    {
+        foreach ($needles as $needle) {
+            if ($needle !== '' && str_contains($haystack, self::escapeMysql($needle))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     // -------------------------------------------------------------------------
@@ -342,6 +430,7 @@ final class SerializedReplacer
 
     /**
      * SQL 字串值 callback（unescape → 序列化替換 → re-escape）
+     * 仿 AI1WM replace_table_values_callback()
      *
      * @param string[] $oldValues
      * @param string[] $newValues
@@ -359,20 +448,20 @@ final class SerializedReplacer
     // 靜態工具方法
     // -------------------------------------------------------------------------
 
+    /**
+     * MySQL special characters escape（使用類別常數 map，效能優化）
+     */
     public static function escapeMysql(string $data): string
     {
-        return strtr($data, array_combine(
-            ["\x00", "\n", "\r", '\\', "'", '"', "\x1a"],
-            ['\\0',  '\\n', '\\r', '\\\\', "\\'", '\\"', '\\Z']
-        ));
+        return strtr($data, self::ESCAPE_MAP);
     }
 
+    /**
+     * MySQL special characters unescape（使用類別常數 map，效能優化）
+     */
     public static function unescapeMysql(string $data): string
     {
-        return strtr($data, array_combine(
-            ['\\0',  '\\n', '\\r', '\\\\', "\\'", '\\"', '\\Z'],
-            ["\x00", "\n", "\r", '\\', "'", '"', "\x1a"]
-        ));
+        return strtr($data, self::UNESCAPE_MAP);
     }
 
     public static function base64Validate(string $data): bool

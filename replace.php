@@ -15,7 +15,7 @@ declare(strict_types=1);
  *
  *   【模式二：直連 MySQL 模式】
  *     在 WordPress 根目錄執行，自動讀取 wp-config.php 取得 DB 連線，
- *     直接對線上資料庫替換，使用 transaction，失敗自動 rollback
+ *     直接對線上資料庫替換，per-table transaction，失敗自動 rollback
  *     php replace.php --old-url=https://old.com --new-url=https://new.com --wp-root=/var/www/html
  *
  * 完整參數：
@@ -26,18 +26,24 @@ declare(strict_types=1);
  *   --sql=<path>              SQL 檔案路徑
  *   --old-prefix=<prefix>     舊資料表前綴，例：wp_（選填）
  *   --new-prefix=<prefix>     新資料表前綴（選填，需與 --old-prefix 一起使用）
+ *   --max-statement-mb=<MB>   大語句最大允許大小（MB），超過跳過 regex 替換，預設 64
  *
  *   --- 模式二（直連 MySQL）---
  *   --wp-root=<path>          WordPress 根目錄路徑（含 wp-config.php 的目錄）
  *   --table-prefix=<prefix>   覆寫資料表前綴（選填，預設從 wp-config.php 讀取）
+ *   --chunk-size=<N>          每批讀取列數（預設 500）
+ *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 256
  *
  *   --- 共用選填參數 ---
  *   --old-path=<path>         舊站 wp-content 實體路徑（選填）
  *   --new-path=<path>         新站 wp-content 實體路徑（選填）
+ *   --old-uploads-url=<URL>   舊站 uploads URL（Multisite 選填）
+ *   --new-uploads-url=<URL>   新站 uploads URL（Multisite 選填）
  *   --no-email-replace        停用 Email 域名替換（選填）
  *   --visual-composer         啟用 Visual Composer Base64 替換（選填）
  *   --oxygen-builder          啟用 Oxygen Builder Base64 替換（選填）
  *   --betheme-avada           啟用 BeTheme/Avada Base64 替換（選填）
+ *   --no-loose                停用寬鬆模式（trailing slash + 跨 scheme 互換）
  *   --extra-old=<value>       額外替換舊值（可重複使用多次）
  *   --extra-new=<value>       額外替換新值（可重複使用多次）
  */
@@ -70,11 +76,15 @@ if (!extension_loaded('pdo_mysql')) {
     }
 }
 
-require_once __DIR__ . '/src/UrlVariantBuilder.php';
-require_once __DIR__ . '/src/SerializedReplacer.php';
-require_once __DIR__ . '/src/Replacer.php';
-require_once __DIR__ . '/src/WpConfigReader.php';
-require_once __DIR__ . '/src/DatabaseReplacer.php';
+if (is_file(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+} else {
+    require_once __DIR__ . '/src/UrlVariantBuilder.php';
+    require_once __DIR__ . '/src/SerializedReplacer.php';
+    require_once __DIR__ . '/src/Replacer.php';
+    require_once __DIR__ . '/src/WpConfigReader.php';
+    require_once __DIR__ . '/src/DatabaseReplacer.php';
+}
 
 use WpMigrate\Src\DatabaseReplacer;
 use WpMigrate\Src\Replacer;
@@ -92,12 +102,17 @@ $options = getopt('', [
     'sql:',
     'old-prefix:',
     'new-prefix:',
+    'max-statement-mb:',
     // 模式二
     'wp-root:',
     'table-prefix:',
+    'chunk-size:',
+    'memory-threshold-mb:',
     // 共用
     'old-path:',
     'new-path:',
+    'old-uploads-url:',
+    'new-uploads-url:',
     'no-email-replace',
     'visual-composer',
     'oxygen-builder',
@@ -110,7 +125,7 @@ $options = getopt('', [
 
 // 顯示說明
 if (isset($options['help'])) {
-    $header = array_slice(file(__FILE__), 2, 46);
+    $header = array_slice(file(__FILE__), 2, 55);
     echo implode('', $header);
     exit(0);
 }
@@ -160,8 +175,10 @@ if (!empty($errors)) {
 
 $oldUrl         = (string) $options['old-url'];
 $newUrl         = (string) $options['new-url'];
-$oldPath        = isset($options['old-path'])   ? (string) $options['old-path']   : '';
-$newPath        = isset($options['new-path'])   ? (string) $options['new-path']   : '';
+$oldPath        = isset($options['old-path'])        ? (string) $options['old-path']        : '';
+$newPath        = isset($options['new-path'])        ? (string) $options['new-path']        : '';
+$oldUploadsUrl  = isset($options['old-uploads-url']) ? (string) $options['old-uploads-url'] : '';
+$newUploadsUrl  = isset($options['new-uploads-url']) ? (string) $options['new-uploads-url'] : '';
 $replaceEmail   = !isset($options['no-email-replace']);
 $visualComposer = isset($options['visual-composer']);
 $oxygenBuilder  = isset($options['oxygen-builder']);
@@ -203,10 +220,16 @@ $builder = new UrlVariantBuilder(
     oldPath: $oldPath,
     newPath: $newPath,
     looseMode: $looseMode,
+    oldUploadsUrl: $oldUploadsUrl,
+    newUploadsUrl: $newUploadsUrl,
 );
 
 if (!$looseMode) {
     echo "[資訊] 寬鬆模式已停用（--no-loose）\n";
+}
+
+if ($oldUploadsUrl !== '' && $newUploadsUrl !== '') {
+    echo "[資訊] Uploads URL 映射：{$oldUploadsUrl} → {$newUploadsUrl}\n";
 }
 
 foreach ($extraOld as $i => $extra) {
@@ -229,9 +252,10 @@ $startTime = microtime(true);
 // =========================================================================
 
 if ($hasSql) {
-    $sqlPath   = (string) $options['sql'];
-    $oldPrefix = isset($options['old-prefix']) ? (string) $options['old-prefix'] : '';
-    $newPrefix = isset($options['new-prefix']) ? (string) $options['new-prefix'] : '';
+    $sqlPath          = (string) $options['sql'];
+    $oldPrefix        = isset($options['old-prefix'])      ? (string) $options['old-prefix']      : '';
+    $newPrefix        = isset($options['new-prefix'])      ? (string) $options['new-prefix']      : '';
+    $maxStatementMb   = isset($options['max-statement-mb']) ? (int) $options['max-statement-mb']  : 64;
 
     if (!is_file($sqlPath)) {
         fwrite(STDERR, "[錯誤] SQL 檔案不存在：{$sqlPath}\n");
@@ -246,6 +270,7 @@ if ($hasSql) {
     $replacer->setVisualComposer($visualComposer);
     $replacer->setOxygenBuilder($oxygenBuilder);
     $replacer->setBethemeOrAvada($bethemeAvada);
+    $replacer->setMaxStatementBytes($maxStatementMb * 1024 * 1024);
 
     if ($oldPrefix !== '' && $newPrefix !== '') {
         echo "[資訊] 表前綴替換：{$oldPrefix} → {$newPrefix}\n";
@@ -274,8 +299,10 @@ if ($hasSql) {
 // 模式二：直連 MySQL 替換
 // =========================================================================
 
-$wpRoot      = rtrim((string) $options['wp-root'], '/');
-$tablePrefix = isset($options['table-prefix']) ? (string) $options['table-prefix'] : '';
+$wpRoot            = rtrim((string) $options['wp-root'], '/');
+$tablePrefix       = isset($options['table-prefix'])        ? (string) $options['table-prefix']       : '';
+$chunkSize         = isset($options['chunk-size'])          ? (int) $options['chunk-size']             : 500;
+$memoryThresholdMb = isset($options['memory-threshold-mb']) ? (int) $options['memory-threshold-mb']   : 256;
 
 if (!is_dir($wpRoot)) {
     fwrite(STDERR, "[錯誤] WordPress 根目錄不存在：{$wpRoot}\n");
@@ -300,7 +327,9 @@ if ($tablePrefix === '') {
 echo "[資訊] 資料庫主機：" . $configReader->getDbHost() . "\n";
 echo "[資訊] 資料庫名稱：" . $configReader->getDbName() . "\n";
 echo "[資訊] 資料表前綴：{$tablePrefix}\n";
-echo "[警告] 即將直接修改線上資料庫，操作不可逆（已啟用 transaction，失敗將 rollback）\n";
+echo "[資訊] Chunk 大小：{$chunkSize} 列\n";
+echo "[資訊] 記憶體閾值：{$memoryThresholdMb} MB\n";
+echo "[警告] 即將直接修改線上資料庫，操作不可逆（每張表獨立 transaction，失敗自動 rollback）\n";
 
 $dbReplacer = new DatabaseReplacer($configReader);
 $dbReplacer->setOldValues($oldValues);
@@ -311,6 +340,8 @@ $dbReplacer->setVisualComposer($visualComposer);
 $dbReplacer->setOxygenBuilder($oxygenBuilder);
 $dbReplacer->setBethemeOrAvada($bethemeAvada);
 $dbReplacer->setTablePrefix($tablePrefix);
+$dbReplacer->setChunkSize($chunkSize);
+$dbReplacer->setMemoryThreshold($memoryThresholdMb * 1024 * 1024);
 
 try {
     $dbReplacer->process();
@@ -319,9 +350,9 @@ try {
     exit(1);
 }
 
-$elapsed     = round(microtime(true) - $startTime, 2);
-$stats       = $dbReplacer->getStats();
-$totalRows   = array_sum($stats);
+$elapsed   = round(microtime(true) - $startTime, 2);
+$stats     = $dbReplacer->getStats();
+$totalRows = array_sum($stats);
 
 echo "[完成] 直連替換成功！耗時 {$elapsed}s，共更新 {$totalRows} 列\n";
 exit(0);
