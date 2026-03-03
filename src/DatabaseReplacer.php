@@ -64,9 +64,9 @@ final class DatabaseReplacer
 
     /**
      * 記憶體使用閾值（bytes）：超過此值時自動縮小 chunk
-     * 預設 256 MB
+     * 預設 768 MB
      */
-    private int $_memoryThreshold = 268_435_456;
+    private int $_memoryThreshold = 768 * 1024 * 1024;
 
     /**
      * keepalive 間隔（每隔多少列執行 SELECT 1）

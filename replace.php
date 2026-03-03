@@ -32,7 +32,7 @@ declare(strict_types=1);
  *   --wp-root=<path>          WordPress 根目錄路徑（含 wp-config.php 的目錄）
  *   --table-prefix=<prefix>   覆寫資料表前綴（選填，預設從 wp-config.php 讀取）
  *   --chunk-size=<N>          每批讀取列數（預設 500）
- *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 256
+ *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 768
  *
  *   --- 共用選填參數 ---
  *   --old-path=<path>         舊站 wp-content 實體路徑（選填）
@@ -302,7 +302,7 @@ if ($hasSql) {
 $wpRoot            = rtrim((string) $options['wp-root'], '/');
 $tablePrefix       = isset($options['table-prefix'])        ? (string) $options['table-prefix']       : '';
 $chunkSize         = isset($options['chunk-size'])          ? (int) $options['chunk-size']             : 500;
-$memoryThresholdMb = isset($options['memory-threshold-mb']) ? (int) $options['memory-threshold-mb']   : 256;
+$memoryThresholdMb = isset($options['memory-threshold-mb']) ? (int) $options['memory-threshold-mb']   : 768;
 
 if (!is_dir($wpRoot)) {
     fwrite(STDERR, "[錯誤] WordPress 根目錄不存在：{$wpRoot}\n");
