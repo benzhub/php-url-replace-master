@@ -33,6 +33,7 @@ declare(strict_types=1);
  *   --table-prefix=<prefix>   覆寫資料表前綴（選填，預設從 wp-config.php 讀取）
  *   --chunk-size=<N>          每批讀取列數（預設 500）
  *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 768
+ *   --skip-tables=suffix1,suffix2 額外跳過的資料表後綴（逗號分隔，不含前綴）
  *
  *   【模式二附加行為】
  *   替換資料庫後，自動掃描並更新 Elementor 磁碟 CSS 快取檔案：
@@ -115,6 +116,7 @@ $options = getopt('', [
     'table-prefix:',
     'chunk-size:',
     'memory-threshold-mb:',
+    'skip-tables:',
     // 共用
     'old-path:',
     'new-path:',
@@ -349,6 +351,13 @@ $dbReplacer->setBethemeOrAvada($bethemeAvada);
 $dbReplacer->setTablePrefix($tablePrefix);
 $dbReplacer->setChunkSize($chunkSize);
 $dbReplacer->setMemoryThreshold($memoryThresholdMb * 1024 * 1024);
+
+if (!empty($options['skip-tables'])) {
+    $extraSkip = array_filter(array_map('trim', explode(',', (string) $options['skip-tables'])));
+    if (!empty($extraSkip)) {
+        $dbReplacer->addSkipTableSuffixes(array_values($extraSkip));
+    }
+}
 
 try {
     $dbReplacer->process();

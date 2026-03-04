@@ -52,6 +52,30 @@ final class DatabaseReplacer
 
     private string $_tablePrefix = 'wp_';
 
+    /** @var string[] */
+    private array $_skipTableSuffixes = [
+        // Action Scheduler (WooCommerce / 各外掛共用)
+        'actionscheduler_actions',
+        'actionscheduler_claims',
+        'actionscheduler_groups',
+        'actionscheduler_logs',
+        // WooCommerce 統計 / 查詢 index（無 URL）
+        'wc_download_log',
+        'wc_order_coupon_lookup',
+        'wc_order_product_lookup',
+        'wc_order_stats',
+        'wc_order_tax_lookup',
+        'wc_product_meta_lookup',
+        'wc_rate_limits',
+        'wc_reserved_stock',
+        'wc_tax_rate_classes',
+        // WooCommerce sessions（row-level 已略過，table-level 加速）
+        'wc_sessions',
+        'woocommerce_sessions',
+        // WooCommerce webhooks（含 delivery_url，但不需跟站點 URL 替換）
+        'wc_webhooks',
+    ];
+
     private readonly SerializedReplacer $_serializedReplacer;
 
     /** @var array<string, int> */
@@ -170,6 +194,19 @@ final class DatabaseReplacer
         return $this;
     }
 
+    /**
+     * 追加額外要略過的資料表後綴（不含前綴）
+     *
+     * @param string[] $suffixes
+     */
+    public function addSkipTableSuffixes(array $suffixes): static
+    {
+        $this->_skipTableSuffixes = array_unique(
+            array_merge($this->_skipTableSuffixes, $suffixes)
+        );
+        return $this;
+    }
+
     // -------------------------------------------------------------------------
     // 核心執行
     // -------------------------------------------------------------------------
@@ -195,6 +232,10 @@ final class DatabaseReplacer
         echo '[資訊] 發現 ' . count($tables) . " 個 WordPress 資料表\n";
 
         foreach ($tables as $table) {
+            if ($this->_shouldSkipTable($table)) {
+                echo "[略過] {$table}（在略過清單中，跳過）\n";
+                continue;
+            }
             $this->_processTableWithTransaction($table);
         }
     }
@@ -554,6 +595,20 @@ final class DatabaseReplacer
         }
 
         return $value;
+    }
+
+    /**
+     * 判斷此資料表是否在略過清單中
+     */
+    private function _shouldSkipTable(string $table): bool
+    {
+        $prefix = $this->_tablePrefix;
+        foreach ($this->_skipTableSuffixes as $suffix) {
+            if ($table === $prefix . $suffix) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
