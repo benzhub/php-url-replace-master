@@ -96,6 +96,7 @@ if (is_file(__DIR__ . '/vendor/autoload.php')) {
 
 use WpMigrate\Src\DatabaseReplacer;
 use WpMigrate\Src\Replacer;
+use WpMigrate\Src\SerializedReplacer;
 use WpMigrate\Src\UrlVariantBuilder;
 use WpMigrate\Src\WpConfigReader;
 
