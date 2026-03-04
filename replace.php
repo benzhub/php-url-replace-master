@@ -34,6 +34,13 @@ declare(strict_types=1);
  *   --chunk-size=<N>          每批讀取列數（預設 500）
  *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 768
  *
+ *   【模式二附加行為】
+ *   替換資料庫後，自動掃描並更新 Elementor 磁碟 CSS 快取檔案：
+ *     wp-content/uploads/elementor/css/*.css
+ *     wp-content/uploads/sites/{N}/elementor/css/*.css（Multisite）
+ *   解決 Elementor 以 status="file" 模式快取 CSS 時，背景圖 URL 未被替換導致
+ *   輪播/區塊背景圖空白的問題。
+ *
  *   --- 共用選填參數 ---
  *   --old-path=<path>         舊站 wp-content 實體路徑（選填）
  *   --new-path=<path>         新站 wp-content 實體路徑（選填）
@@ -348,6 +355,69 @@ try {
 } catch (\RuntimeException $e) {
     fwrite(STDERR, "[錯誤] " . $e->getMessage() . "\n");
     exit(1);
+}
+
+// -------------------------------------------------------------------------
+// Elementor CSS 磁碟快取檔案替換
+//
+// 問題背景：
+//   Elementor 將 slide/section 背景圖的 CSS 存成磁碟檔案
+//   （wp-content/uploads/elementor/css/*.css）。
+//   當 _elementor_css.status = "file" 時，postmeta 中 css 欄位為空字串，
+//   實際 CSS（含 background-image URL）僅存在磁碟上，DB 替換無法觸及。
+//   若這些 CSS 檔案未同步更新，頁面仍會以舊域名的背景圖 URL 來渲染，
+//   導致圖片空白。
+//
+// 解決方式：
+//   直連模式擁有 wp-root 路徑，可直接存取磁碟，因此在 DB 替換後
+//   額外掃描並替換 Elementor CSS 快取目錄下所有 .css 檔案的 URL。
+//   同時支援 Multisite（wp-content/uploads/sites/{N}/elementor/css/）。
+// -------------------------------------------------------------------------
+
+$elementorCssDirs = [];
+
+// 標準單站
+$stdCssDir = $wpRoot . '/wp-content/uploads/elementor/css';
+if (is_dir($stdCssDir)) {
+    $elementorCssDirs[] = $stdCssDir;
+}
+
+// Multisite：wp-content/uploads/sites/{N}/elementor/css
+$sitesUploadsDir = $wpRoot . '/wp-content/uploads/sites';
+if (is_dir($sitesUploadsDir)) {
+    foreach (glob($sitesUploadsDir . '/*/elementor/css', GLOB_ONLYDIR) ?: [] as $dir) {
+        $elementorCssDirs[] = $dir;
+    }
+}
+
+if (!empty($elementorCssDirs)) {
+    $cssScanned = 0;
+    $cssUpdated = 0;
+
+    foreach ($elementorCssDirs as $cssDir) {
+        $cssFiles = glob($cssDir . '/*.css') ?: [];
+        $cssScanned += count($cssFiles);
+
+        foreach ($cssFiles as $cssFile) {
+            $content = file_get_contents($cssFile);
+            if ($content === false) {
+                echo "[警告] Elementor CSS：無法讀取 {$cssFile}\n";
+                continue;
+            }
+
+            $newContent = SerializedReplacer::replaceValues($oldValues, $newValues, $content);
+
+            if ($newContent !== $content) {
+                if (file_put_contents($cssFile, $newContent) === false) {
+                    echo "[警告] Elementor CSS：無法寫入 {$cssFile}\n";
+                    continue;
+                }
+                $cssUpdated++;
+            }
+        }
+    }
+
+    echo "[更新] Elementor CSS 快取：掃描 {$cssScanned} 個檔案，替換 {$cssUpdated} 個\n";
 }
 
 $elapsed   = round(microtime(true) - $startTime, 2);
