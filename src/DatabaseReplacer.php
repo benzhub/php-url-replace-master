@@ -74,6 +74,9 @@ final class DatabaseReplacer
         'woocommerce_sessions',
         // WooCommerce webhooks（含 delivery_url，但不需跟站點 URL 替換）
         'wc_webhooks',
+        // WP Security Audit Log（純 log，不影響網站功能）
+        'wsal_metadata',
+        'wsal_occurrences',
     ];
 
     private readonly SerializedReplacer $_serializedReplacer;
