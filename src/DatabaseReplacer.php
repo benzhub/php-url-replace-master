@@ -77,6 +77,9 @@ final class DatabaseReplacer
         // WP Security Audit Log（純 log，不影響網站功能）
         'wsal_metadata',
         'wsal_occurrences',
+        // Simple History（純 log，不影響網站功能）
+        'simple_history',
+        'simple_history_contexts',
     ];
 
     private readonly SerializedReplacer $_serializedReplacer;
