@@ -235,7 +235,13 @@ final class SerializedReplacer
                     }
                 }
             } elseif (is_string($data)) {
-                $data = self::replaceValues($from, $to, $data);
+                // 若字串本身是 JSON（如 Rank Math Schema、序列化內嵌的 JSON），
+                // 先 json_decode 遞迴替換後再 json_encode，確保巢狀 JSON 也能被替換
+                if (self::isJson($data)) {
+                    $data = self::replaceJsonValues($from, $to, $data);
+                } else {
+                    $data = self::replaceValues($from, $to, $data);
+                }
             }
 
             if ($serialized) {
