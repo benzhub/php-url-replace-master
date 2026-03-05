@@ -79,11 +79,48 @@ final class WpConfigReader
     private string $_dbCollate = '';
 
     /**
+     * CLI 覆寫的 DB 連線參數（優先於 wp-config.php 解析結果）
+     * 用於 wp-config.php 使用 getenv() 的容器化環境，在腳本執行環境中無法取得對應環境變數時
+     *
+     * @var array<string, string>
+     */
+    private array $_dbOverrides = [];
+
+    /**
      * 建構子
      *
      * @param string $wpRoot WordPress 根目錄路徑
      */
     public function __construct( private readonly string $wpRoot ) {}
+
+    /**
+     * 設定 CLI 覆寫的 DB 連線參數
+     *
+     * 當 wp-config.php 使用 getenv() 讀取環境變數，而執行腳本的環境（如本機）
+     * 無法取得這些環境變數時，可透過此方法直接指定連線參數，覆寫解析結果。
+     *
+     * 非空字串才會覆寫，空字串則保留 wp-config.php 的解析值。
+     *
+     * @param string $host     DB 主機（含 port，例：mysql-service:3306）
+     * @param string $name     DB 名稱
+     * @param string $user     DB 使用者
+     * @param string $password DB 密碼
+     *
+     * @return static
+     */
+    public function setDbOverrides(
+        string $host     = '',
+        string $name     = '',
+        string $user     = '',
+        string $password = '',
+    ): static {
+        if ( $host !== '' )     { $this->_dbOverrides['DB_HOST']     = $host; }
+        if ( $name !== '' )     { $this->_dbOverrides['DB_NAME']     = $name; }
+        if ( $user !== '' )     { $this->_dbOverrides['DB_USER']     = $user; }
+        if ( $password !== '' ) { $this->_dbOverrides['DB_PASSWORD'] = $password; }
+
+        return $this;
+    }
 
     /**
      * 解析 wp-config.php
@@ -106,8 +143,13 @@ final class WpConfigReader
             throw new RuntimeException( "無法讀取 wp-config.php：{$config_path}" );
         }
 
-        $constants          = $this->_extractDefineConstants( $source );
-        $table_prefix       = $this->_extractTablePrefix( $source );
+        $constants    = $this->_extractDefineConstants( $source );
+        $table_prefix = $this->_extractTablePrefix( $source );
+
+        // CLI 覆寫優先：合併至 constants（覆寫 getenv() 解析失敗的空值）
+        foreach ( $this->_dbOverrides as $key => $value ) {
+            $constants[ $key ] = $value;
+        }
 
         $this->_dbHost      = $constants['DB_HOST']     ?? '';
         $this->_dbName      = $constants['DB_NAME']     ?? '';
@@ -127,6 +169,8 @@ final class WpConfigReader
         if ( ! empty( $missing ) ) {
             throw new RuntimeException(
                 'wp-config.php 缺少必要常數：' . implode( ', ', $missing )
+                . "\n提示：若 wp-config.php 使用 getenv() 讀取環境變數，"
+                . '請加上 --db-host / --db-name / --db-user / --db-pass 參數直接指定連線資訊。'
             );
         }
 

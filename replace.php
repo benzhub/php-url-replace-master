@@ -35,6 +35,21 @@ declare(strict_types=1);
  *   --memory-threshold-mb=<MB> 記憶體使用閾值（MB），超過時自動縮小 chunk，預設 768
  *   --skip-tables=suffix1,suffix2 額外跳過的資料表後綴（逗號分隔，不含前綴）
  *
+ *   --- 模式二 DB 連線覆寫（當 wp-config.php 使用 getenv() 時必填）---
+ *   --db-host=<host>          直接指定 DB 主機（覆寫 wp-config.php 解析結果）
+ *   --db-name=<name>          直接指定 DB 名稱
+ *   --db-user=<user>          直接指定 DB 使用者
+ *   --db-pass=<password>      直接指定 DB 密碼
+ *
+ *   範例（wp-config.php 使用 getenv() 的容器化環境）：
+ *   php replace.php \
+ *     --old-url=https://old.com --new-url=https://new.com \
+ *     --wp-root=/var/www/html \
+ *     --db-host=mysql-service:3306 \
+ *     --db-name=wordpress \
+ *     --db-user=wordpress \
+ *     --db-pass=secret
+ *
  *   【模式二附加行為】
  *   替換資料庫後，自動掃描並更新 Elementor 磁碟 CSS 快取檔案：
  *     wp-content/uploads/elementor/css/*.css
@@ -118,6 +133,11 @@ $options = getopt('', [
     'chunk-size:',
     'memory-threshold-mb:',
     'skip-tables:',
+    // 模式二 DB 連線覆寫（wp-config.php 使用 getenv() 時必填）
+    'db-host:',
+    'db-name:',
+    'db-user:',
+    'db-pass:',
     // 共用
     'old-path:',
     'new-path:',
@@ -321,8 +341,26 @@ if (!is_dir($wpRoot)) {
 
 echo "[執行] 模式二：直連 MySQL，讀取 wp-config.php from {$wpRoot}\n";
 
+// CLI DB 連線覆寫參數（當 wp-config.php 使用 getenv() 時使用）
+$dbHostOverride = isset($options['db-host']) ? (string) $options['db-host'] : '';
+$dbNameOverride = isset($options['db-name']) ? (string) $options['db-name'] : '';
+$dbUserOverride = isset($options['db-user']) ? (string) $options['db-user'] : '';
+$dbPassOverride = isset($options['db-pass']) ? (string) $options['db-pass'] : '';
+
 try {
     $configReader = new WpConfigReader($wpRoot);
+
+    // 若有 CLI 覆寫參數，先注入再 parse（避免 getenv() 在非 pod 環境解析失敗）
+    if ($dbHostOverride !== '' || $dbNameOverride !== '' || $dbUserOverride !== '') {
+        $configReader->setDbOverrides(
+            host:     $dbHostOverride,
+            name:     $dbNameOverride,
+            user:     $dbUserOverride,
+            password: $dbPassOverride,
+        );
+        echo "[資訊] 使用 CLI 指定的 DB 連線參數（覆寫 wp-config.php 解析結果）\n";
+    }
+
     $configReader->parse();
 } catch (\RuntimeException $e) {
     fwrite(STDERR, "[錯誤] " . $e->getMessage() . "\n");
